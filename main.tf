@@ -1,387 +1,276 @@
-# Generate a random password
+# This OpenTofu script deploys a Palo Alto Networks Cloud Next-Generation Firewall (NGFW) in Azure.
+# It includes the creation of:
+# - A dedicated Azure Resource Group.
+# - A Virtual Network (VNet) with specific subnets for the NGFW's interfaces.
+# - Public IP addresses for the NGFW's frontend.
+# - The Cloud NGFW resource itself, configured to attach to the created network components.
 
-# https://registry.terraform.io/providers/hashicorp/random/latest/docs/resources/password
-resource "random_password" "this" {
-  count = anytrue([for _, v in var.test_infrastructure : v.authentication.password == null]) ? 1 : 0
-
-
-  length           = 16
-  min_lower        = 16 - 4
-  min_numeric      = 1
-  min_special      = 1
-  min_upper        = 1
-  override_special = "_%@"
-}
-
-# Create or source a Resource Group
-
-# https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/resource_group
-resource "azurerm_resource_group" "this" {
-  count    = var.create_resource_group ? 1 : 0
-  name     = "${var.name_prefix}${var.resource_group_name}"
-  location = var.region
-
-  tags = var.tags
-}
-
-# https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/data-sources/resource_group
-data "azurerm_resource_group" "this" {
-  count = var.create_resource_group ? 0 : 1
-  name  = var.resource_group_name
-}
-
-locals {
-  resource_group = var.create_resource_group ? azurerm_resource_group.this[0] : data.azurerm_resource_group.this[0]
-}
-
-# Manage the network required for the topology
-
-module "vnet" {
-  source = "../../modules/vnet"
-
-  for_each = var.vnets
-
-  name                   = each.value.create_virtual_network ? "${var.name_prefix}${each.value.name}" : each.value.name
-  create_virtual_network = each.value.create_virtual_network
-  resource_group_name    = coalesce(each.value.resource_group_name, local.resource_group.name)
-  region                 = var.region
-
-  address_space           = each.value.address_space
-  dns_servers             = each.value.dns_servers
-  vnet_encryption         = each.value.vnet_encryption
-  ddos_protection_plan_id = each.value.ddos_protection_plan_id
-
-  subnets = each.value.subnets
-
-  network_security_groups = {
-    for k, v in each.value.network_security_groups : k => merge(v, { name = "${var.name_prefix}${v.name}" })
+# --- Provider Configuration ---
+# Specifies the required AzureRM provider and its version.
+# OpenTofu will download this provider during 'opentofu init'.
+terraform {
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 3.0" # It's best practice to pin to a specific major version
+                         # Check the Terraform Registry for the latest compatible version.
+    }
   }
-  route_tables = {
-    for k, v in each.value.route_tables : k => merge(v, { name = "${var.name_prefix}${v.name}" })
-  }
-
-  tags = var.tags
 }
 
-module "vnet_peering" {
-  source = "../../modules/vnet_peering"
-
-  for_each = var.vnet_peerings
-
-  local_peer_config = {
-    name                = "peer-${each.value.local_vnet_name}-to-${each.value.remote_vnet_name}"
-    resource_group_name = coalesce(each.value.local_resource_group_name, local.resource_group.name)
-    vnet_name           = each.value.local_vnet_name
-  }
-  remote_peer_config = {
-    name                = "peer-${each.value.remote_vnet_name}-to-${each.value.local_vnet_name}"
-    resource_group_name = coalesce(each.value.remote_resource_group_name, local.resource_group.name)
-    vnet_name           = each.value.remote_vnet_name
-  }
-  depends_on = [module.vnet]
+# Configures the AzureRM provider.
+# The 'features' block is mandatory for the AzureRM provider.
+provider "azurerm" {
+  features {}
 }
 
-module "public_ip" {
-  source = "../../modules/public_ip"
+# --- Input Variables ---
+# These variables allow for customization of the deployment.
 
-  region = var.region
-  public_ip_addresses = {
-    for k, v in var.public_ips.public_ip_addresses : k => merge(v, {
-      name                = "${var.name_prefix}${v.name}"
-      resource_group_name = coalesce(v.resource_group_name, local.resource_group.name)
-    })
-  }
-  public_ip_prefixes = {
-    for k, v in var.public_ips.public_ip_prefixes : k => merge(v, {
-      name                = "${var.name_prefix}${v.name}"
-      resource_group_name = coalesce(v.resource_group_name, local.resource_group.name)
-    })
-  }
-
-  tags = var.tags
+variable "resource_group_name" {
+  description = "The name of the Azure Resource Group for the Cloud NGFW."
+  type        = string
+  default     = "RHTESTING" # As requested by the user
 }
 
-locals {
-  remote_virtual_network_ids = merge({ for entry in flatten([
-    for val in { for k, v in module.test_infrastructure : k => v.vnet_ids } : [
-      for k, v in val : {
-        key = k
-        val = v
-      }
+variable "location" {
+  description = "The Azure region where resources will be deployed."
+  type        = string
+  default     = "East US 2" # Example region, choose one near you
+}
+
+variable "firewall_name" {
+  description = "The name of the Palo Alto Networks Cloud NGFW instance."
+  type        = string
+  default     = "cngfwrh" # As requested by the user
+}
+
+variable "vnet_name" {
+  description = "The name of the Virtual Network (VNet) for the NGFW interfaces."
+  type        = string
+  default     = "ngfw-vnet-01"
+}
+
+variable "vnet_address_space" {
+  description = "The address space (CIDR) for the VNet."
+  type        = list(string)
+  default     = ["10.10.0.0/16"]
+}
+
+variable "untrusted_subnet_name" {
+  description = "The name of the untrusted subnet for the NGFW interface."
+  type        = string
+  default     = "untrusted-subnet"
+}
+
+variable "untrusted_subnet_prefix" {
+  description = "The address prefix (CIDR) for the untrusted subnet."
+  type        = string
+  default     = "10.10.0.0/28"
+}
+
+variable "trusted_subnet_name" {
+  description = "The name of the trusted subnet for the NGFW interface."
+  type        = string
+  default     = "trusted-subnet"
+}
+
+variable "trusted_subnet_prefix" {
+  description = "The address prefix (CIDR) for the trusted subnet."
+  type        = string
+  default     = "10.10.0.16/28"
+}
+
+variable "management_subnet_name" {
+  description = "The name of the management subnet for the NGFW interface (optional)."
+  type        = string
+  default     = "management-subnet"
+}
+
+variable "management_subnet_prefix" {
+  description = "The address prefix (CIDR) for the management subnet (optional)."
+  type        = string
+  default     = "10.10.0.32/28"
+}
+
+variable "tags" {
+  description = "A map of tags to apply to all deployed resources."
+  type        = map(string)
+  default = {
+    Environment = "Dev"
+    Project     = "CloudNGFWDemo"
+    ManagedBy   = "OpenTofu"
+  }
+}
+
+# --- Azure Resource Group ---
+# Creates a new Azure Resource Group to contain all the NGFW resources.
+resource "azurerm_resource_group" "ngfw_rg" {
+  name     = var.resource_group_name
+  location = var.location
+  tags     = var.tags
+}
+
+# --- Virtual Network (VNet) ---
+# Creates the Virtual Network where the NGFW's interfaces will reside.
+resource "azurerm_virtual_network" "ngfw_vnet" {
+  name                = var.vnet_name
+  location            = azurerm_resource_group.ngfw_rg.location
+  resource_group_name = azurerm_resource_group.ngfw_rg.name
+  address_space       = var.vnet_address_space
+  tags                = var.tags
+}
+
+# --- Untrusted Subnet for NGFW Interface ---
+# This subnet is used for traffic entering the NGFW from untrusted sources (e.g., Internet).
+resource "azurerm_subnet" "untrusted_subnet" {
+  name                 = var.untrusted_subnet_name
+  resource_group_name  = azurerm_resource_group.ngfw_rg.name
+  virtual_network_name = azurerm_virtual_network.ngfw_vnet.name
+  address_prefixes     = [var.untrusted_subnet_prefix]
+  # Service endpoints are often enabled for security services
+  service_endpoints    = ["Microsoft.Storage", "Microsoft.KeyVault"]
+}
+
+# --- Trusted Subnet for NGFW Interface ---
+# This subnet is used for traffic exiting the NGFW to trusted destinations (e.g., internal applications).
+resource "azurerm_subnet" "trusted_subnet" {
+  name                 = var.trusted_subnet_name
+  resource_group_name  = azurerm_resource_group.ngfw_rg.name
+  virtual_network_name = azurerm_virtual_network.ngfw_vnet.name
+  address_prefixes     = [var.trusted_subnet_prefix]
+  service_endpoints    = ["Microsoft.Storage", "Microsoft.KeyVault"]
+}
+
+# --- Management Subnet for NGFW Interface (Optional but Recommended) ---
+# This subnet can be used for dedicated management access to the NGFW.
+resource "azurerm_subnet" "management_subnet" {
+  name                 = var.management_subnet_name
+  resource_group_name  = azurerm_resource_group.ngfw_rg.name
+  virtual_network_name = azurerm_virtual_network.ngfw_vnet.name
+  address_prefixes     = [var.management_subnet_prefix]
+}
+
+# --- Public IP Addresses for NGFW Frontend ---
+# The Cloud NGFW requires public IP addresses for its external facing interfaces (e.g., ingress/egress NAT).
+# We'll create two as a common scenario, one for ingress and one for egress.
+resource "azurerm_public_ip" "ngfw_public_ip_ingress" {
+  name                = "${var.firewall_name}-pip-ingress"
+  location            = azurerm_resource_group.ngfw_rg.location
+  resource_group_name = azurerm_resource_group.ngfw_rg.name
+  allocation_method   = "Static"
+  sku                 = "Standard" # Standard SKU is generally recommended for production
+  tags                = var.tags
+}
+
+resource "azurerm_public_ip" "ngfw_public_ip_egress" {
+  name                = "${var.firewall_name}-pip-egress"
+  location            = azurerm_resource_group.ngfw_rg.location
+  resource_group_name = azurerm_resource_group.ngfw_rg.name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+  tags                = var.tags
+}
+
+# --- Palo Alto Networks Cloud NGFW Resource ---
+# This is the main resource that provisions the Cloud NGFW service.
+# It defines the NGFW's name, location, and its network configuration.
+resource "azurerm_palo_alto_next_generation_firewall_virtual_network_appliance" "ngfw" {
+  name                = var.firewall_name
+  location            = azurerm_resource_group.ngfw_rg.location
+  resource_group_name = azurerm_resource_group.ngfw_rg.name
+  tags                = var.tags
+
+  # Network profile configuration for the NGFW interfaces
+  network_profile {
+    # Public IP addresses assigned to the NGFW for external connectivity.
+    public_ip_address_ids = [
+      azurerm_public_ip.ngfw_public_ip_ingress.id,
+      azurerm_public_ip.ngfw_public_ip_egress.id,
     ]
-    ]) : entry.key => entry.val
-  }, { for k, v in module.vnet : k => v.virtual_network_id })
-}
 
-locals {
-  route_tables = {
-    for wan_key, wan in var.virtual_wans : wan_key => {
-      for rt_item in flatten([
-        for hub_key, hub in try(wan.virtual_hubs, {}) : [
-          for rt_key, rt in try(hub.route_tables, {}) : {
-            key     = rt_key
-            hub_key = hub_key
-            name    = rt.name
-            labels  = try(rt.labels, [])
-          }
-        ]
-        ]) : rt_item.key => {
-        name    = rt_item.name
-        labels  = rt_item.labels
-        hub_key = rt_item.hub_key
-      }
+    # Virtual Network configuration for the NGFW's internal interfaces.
+    vnet_configuration {
+      virtual_network_id  = azurerm_virtual_network.ngfw_vnet.id
+      trusted_subnet_id   = azurerm_subnet.trusted_subnet.id
+      untrusted_subnet_id = azurerm_subnet.untrusted_subnet.id
+      # Optional: if you have a separate management subnet, specify it here.
+      # ip_of_trusted_subnet_for_free_mode = "" # Usually not needed for standard deployments
+    }
+
+    # Optional: Management network profile if distinct from data interfaces.
+    # The Cloud NGFW service might have specific requirements for management.
+    # Refer to Palo Alto's documentation for exact requirements.
+    # For a simple deployment, if management access uses the same VNet, it might
+    # not need a separate block, or the NGFW resource might implicitly handle it.
+    # However, if you need a dedicated management interface (e.g., for Panorama),
+    # it would typically be configured within the NGFW resource or its associated rulestack.
+    # The resource 'azurerm_palo_alto_next_generation_firewall_virtual_network_appliance'
+    # generally does not have a separate `management_network_profile` block for VNet attachment,
+    # as its management is often cloud-managed or integrated via a rulestack.
+    # We include the management subnet as a general network best practice for future use
+    # or specific Panorama deployment models.
+  }
+
+  # --- Local Rulestack Configuration (Mandatory for CloudManaged NGFW) ---
+  # The Cloud NGFW needs a rulestack to define its security policies.
+  # This example uses a local rulestack (CloudManaged by Azure).
+  # If you were using Panorama, you would use a different resource type
+  # like `azurerm_palo_alto_next_generation_firewall_virtual_hub_panorama`
+  # or configure the Panorama integration within the `local_rulestack` block.
+  local_rulestack {
+    name       = "${var.firewall_name}-rulestack"
+    location   = azurerm_resource_group.ngfw_rg.location
+    min_engine_version = "9.0.0" # Example min engine version, adjust as needed
+    security_services {
+      anti_spyware_profile_name = "default"
+      anti_virus_profile_name   = "default"
+      url_filtering_profile_name = "default"
+      file_blocking_profile_name = "default"
+      dns_security_profile_name = "default"
+      # Add other security services as required
     }
   }
 
-  connections = {
-    for wan_key, wan in var.virtual_wans : wan_key => {
-      for conn_item in flatten([
-        for hub_key, hub in try(wan.virtual_hubs, {}) : [
-          for conn_key, conn in try(hub.connections, {}) : {
-            key             = conn_key
-            hub_key         = hub_key
-            name            = conn.name
-            connection_type = conn.connection_type
-            vpn_site_key    = conn.vpn_site_key
-            routing         = conn.routing
-            vpn_link        = conn.vpn_link
-            remote_virtual_network_id = (conn.connection_type == "Vnet"
-              ? lookup(local.remote_virtual_network_ids, conn.remote_virtual_network_key, null)
-            : null)
-          }
-        ]
-        ]) : conn_item.key => {
-        hub_key                   = conn_item.hub_key
-        name                      = conn_item.name
-        connection_type           = conn_item.connection_type
-        remote_virtual_network_id = conn_item.remote_virtual_network_id
-        vpn_site_key              = conn_item.vpn_site_key
-        routing                   = conn_item.routing
-        vpn_link                  = conn_item.vpn_link
-      }
-    }
-  }
-
-  vpn_sites = {
-    for wan_key, wan in var.virtual_wans : wan_key => {
-      for site_item in flatten([
-        for hub_key, hub in try(wan.virtual_hubs, {}) : [
-          for site_key, site in try(hub.vpn_sites, {}) : {
-            key                 = site_key
-            name                = site.name
-            region              = site.region
-            resource_group_name = site.resource_group_name
-            address_cidrs       = site.address_cidrs
-            link                = site.link
-          }
-        ]
-        ]) : site_item.key => {
-        name                = site_item.name
-        region              = site_item.region
-        resource_group_name = site_item.resource_group_name
-        address_cidrs       = site_item.address_cidrs
-        link                = site_item.link
-      }
-    }
-  }
+  # Add other mandatory or optional configuration blocks based on your needs
+  # and the specific features of the Cloud NGFW you want to enable.
+  # e.g., `destination_nat`, `egress_nat`, `dns_settings`, `diagnostics`
 }
 
-module "virtual_wan" {
-  source = "../../modules/vwan"
+# --- Outputs ---
+# Provides useful information about the deployed resources after apply.
 
-  for_each = var.virtual_wans
-
-  virtual_wan_name    = each.value.create ? "${var.name_prefix}${each.value.name}" : each.value.name
-  resource_group_name = coalesce(each.value.resource_group_name, local.resource_group.name)
-  region              = coalesce(each.value.region, var.region)
-
-  virtual_hubs = each.value.virtual_hubs
-  route_tables = lookup(local.route_tables, each.key, {})
-  connections  = lookup(local.connections, each.key, {})
-  vpn_sites    = lookup(local.vpn_sites, each.key, {})
-
-  tags = var.tags
+output "ngfw_resource_group_name" {
+  description = "The name of the Azure Resource Group containing the Cloud NGFW."
+  value       = azurerm_resource_group.ngfw_rg.name
 }
 
-locals {
-  routing_intent = {
-    for vwan_key, vwan in var.virtual_wans : vwan_key => {
-      for hub_key, hub in try(vwan.virtual_hubs, {}) : hub_key => {
-        virtual_hub_id = try(
-          module.virtual_wan[vwan_key].virtual_hub_ids[hub_key],
-          null
-        )
-        routing_intent = {
-          routing_intent_name = hub.routing_intent.routing_intent_name
-          routing_policy = [
-            for policy in hub.routing_intent.routing_policy : merge(
-              policy,
-              {
-                next_hop_id = try(
-                  module.cloudngfw[policy.next_hop_key]
-                  .palo_alto_virtual_network_appliance_id,
-                  null
-                )
-              }
-            )
-          ]
-        }
-      }
-      if hub.routing_intent != null
-    }
-  }
-
-  routes = {
-    for vwan_key, vwan in var.virtual_wans : vwan_key => {
-      for route_item in flatten([
-        for hub_key, hub in try(vwan.virtual_hubs, {}) : [
-          for rt_key, rt in try(hub.route_tables, {}) : [
-            for route_key, route in try(rt.routes, {}) : {
-              route_key         = route_key
-              name              = route.name
-              destinations_type = route.destinations_type
-              destinations      = route.destinations
-              next_hop_type     = route.next_hop_type
-              next_hop_key      = try(route.next_hop_key, null)
-              route_table_key   = rt_key
-              hub_key           = hub_key
-            }
-          ]
-        ]
-        ]) : route_item.route_key => {
-        name              = route_item.name
-        destinations_type = route_item.destinations_type
-        destinations      = route_item.destinations
-        next_hop_type     = route_item.next_hop_type
-        next_hop_id = try(
-          module.cloudngfw[route_item.next_hop_key].palo_alto_virtual_network_appliance_id,
-          null
-        )
-        route_table_id = try(
-          module.virtual_wan[vwan_key].route_table_ids[route_item.route_table_key],
-          null
-        )
-      }
-    }
-  }
+output "cloud_ngfw_name" {
+  description = "The name of the deployed Cloud NGFW instance."
+  value       = azurerm_palo_alto_next_generation_firewall_virtual_network_appliance.ngfw.name
 }
 
-module "vwan_routes" {
-  source = "../../modules/vwan_routes"
-
-  for_each = var.virtual_wans
-
-  routes         = lookup(local.routes, each.key, {})
-  routing_intent = lookup(local.routing_intent, each.key, {})
+output "cloud_ngfw_public_ip_ingress" {
+  description = "The Public IP address for ingress traffic to the Cloud NGFW."
+  value       = azurerm_public_ip.ngfw_public_ip_ingress.ip_address
 }
 
-# Create Cloud Next-Generation Firewalls
-
-locals {
-  vnets = merge(module.vnet, [for env in module.test_infrastructure : env.vnets]...)
+output "cloud_ngfw_public_ip_egress" {
+  description = "The Public IP address for egress traffic from the Cloud NGFW."
+  value       = azurerm_public_ip.ngfw_public_ip_egress.ip_address
 }
 
-module "cloudngfw" {
-  source = "../../modules/cloudngfw"
-
-  for_each = var.cloudngfws
-
-  name                = "${var.name_prefix}${each.value.name}"
-  resource_group_name = local.resource_group.name
-  region              = var.region
-
-  attachment_type = each.value.attachment_type
-  virtual_network_id = each.value.attachment_type == "vnet" ? (
-    local.vnets[each.value.virtual_network_key].virtual_network_id
-  ) : null
-  untrusted_subnet_id = each.value.attachment_type == "vnet" ? (
-    local.vnets[each.value.virtual_network_key].subnet_ids[each.value.untrusted_subnet_key]
-  ) : null
-  trusted_subnet_id = each.value.attachment_type == "vnet" ? (
-    local.vnets[each.value.virtual_network_key].subnet_ids[each.value.trusted_subnet_key]
-  ) : null
-  virtual_hub_id  = each.value.attachment_type == "vwan" ? module.virtual_wan[each.value.virtual_wan_key].virtual_hub_ids[each.value.virtual_hub_key] : null
-  management_mode = each.value.management_mode
-  cloudngfw_config = merge(each.value.cloudngfw_config, {
-    public_ip_name = each.value.cloudngfw_config.public_ip_keys == null ? (each.value.cloudngfw_config.create_public_ip ? "${
-      var.name_prefix}${coalesce(each.value.cloudngfw_config.public_ip_name, "${each.value.name}-pip")
-    }" : each.value.cloudngfw_config.public_ip_name) : null
-    public_ip_ids = try({ for k, v in module.public_ip.pip_ids : k => v
-    if contains(each.value.cloudngfw_config.public_ip_keys, k) }, null)
-    egress_nat_ip_ids = try({ for k, v in module.public_ip.pip_ids : k => v
-    if contains(each.value.cloudngfw_config.egress_nat_ip_keys, k) }, null)
-    destination_nats = {
-      for k, v in each.value.cloudngfw_config.destination_nats : k => merge(v, {
-        frontend_public_ip_address_id = v.frontend_public_ip_key != null ? lookup(module.public_ip.pip_ids, v.frontend_public_ip_key, null) : null
-      })
-    }
-  })
-
-  tags = var.tags
+output "ngfw_vnet_id" {
+  description = "The ID of the Virtual Network where the NGFW interfaces are located."
+  value       = azurerm_virtual_network.ngfw_vnet.id
 }
 
-# Create test infrastructure
-
-locals {
-  test_vm_authentication = {
-    for k, v in var.test_infrastructure : k =>
-    merge(
-      v.authentication,
-      {
-        password = coalesce(v.authentication.password, try(random_password.this[0].result, null))
-      }
-    )
-  }
+output "ngfw_untrusted_subnet_id" {
+  description = "The ID of the untrusted subnet connected to the NGFW."
+  value       = azurerm_subnet.untrusted_subnet.id
 }
 
-module "test_infrastructure" {
-  source = "../../modules/test_infrastructure"
-
-  for_each = var.test_infrastructure
-
-  resource_group_name = try(
-    "${var.name_prefix}${each.value.resource_group_name}", "${local.resource_group.name}-testenv"
-  )
-  region = var.region
-  vnets = { for k, v in each.value.vnets : k => merge(v, {
-    name = "${var.name_prefix}${v.name}"
-    hub_vnet_name = try(var.vnets[v.hub_vnet_key].create_virtual_network ?
-    "${var.name_prefix}${var.vnets[v.hub_vnet_key].name}" : var.vnets[v.hub_vnet_key].name, null)
-    hub_resource_group_name = try(
-      coalesce(module.vnet[v.hub_vnet_key].virtual_network_resource_group, local.resource_group.name), null
-    )
-    network_security_groups = { for kv, vv in v.network_security_groups : kv => merge(vv, {
-      name = "${var.name_prefix}${vv.name}" })
-    }
-    route_tables = { for kv, vv in v.route_tables : kv => merge(vv, {
-      name = "${var.name_prefix}${vv.name}" })
-    }
-    local_peer_config  = try(v.local_peer_config, {})
-    remote_peer_config = try(v.remote_peer_config, {})
-  }) }
-  load_balancers = { for k, v in each.value.load_balancers : k => merge(v, {
-    name         = "${var.name_prefix}${v.name}"
-    backend_name = coalesce(v.backend_name, "${v.name}-backend")
-    public_ip_name = v.frontend_ips.create_public_ip ? (
-      "${var.name_prefix}${v.frontend_ips.public_ip_name}"
-    ) : v.frontend_ips.public_ip_name
-    public_ip_id             = try(module.public_ip.pip_ids[v.frontend_ips.public_ip_key], null)
-    public_ip_address        = try(module.public_ip.pip_ip_addresses[v.frontend_ips.public_ip_key], null)
-    public_ip_prefix_id      = try(module.public_ip.ippre_ids[v.frontend_ips.public_ip_prefix_key], null)
-    public_ip_prefix_address = try(module.public_ip.ippre_ip_prefixes[v.frontend_ips.public_ip_prefix_key], null)
-  }) }
-  authentication = local.test_vm_authentication[each.key]
-  spoke_vms = { for k, v in each.value.spoke_vms : k => merge(v, {
-    name           = "${var.name_prefix}${v.name}"
-    interface_name = "${var.name_prefix}${coalesce(v.interface_name, "${v.name}-nic")}"
-    disk_name      = "${var.name_prefix}${coalesce(v.disk_name, "${v.name}-osdisk")}"
-  }) }
-  bastions = { for k, v in each.value.bastions : k => merge(v, {
-    name           = "${var.name_prefix}${v.name}"
-    public_ip_name = v.public_ip_key != null ? null : "${var.name_prefix}${coalesce(v.public_ip_name, "${v.name}-pip")}"
-    public_ip_id   = try(module.public_ip.pip_ids[v.public_ip_key], null)
-  }) }
-
-  tags       = var.tags
-  depends_on = [module.vnet]
+output "ngfw_trusted_subnet_id" {
+  description = "The ID of the trusted subnet connected to the NGFW."
+  value       = azurerm_subnet.trusted_subnet.id
 }
