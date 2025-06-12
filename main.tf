@@ -7,7 +7,7 @@ terraform {
       source  = "hashicorp/azurerm"
       # IMPORTANT: Use a version known to support the NGFW resource.
       # Versions 3.117.0 and higher in the 3.x series should work.
-      version = "~> 3.117.0" 
+      version = "3.117.1" # <-- FORCED TO SPECIFIC VERSION
     }
   }
 }
@@ -201,3 +201,4 @@ output "ngfw_trusted_subnet_id" {
   description = "The ID of the trusted subnet connected to the NGFW."
   value       = azurerm_subnet.trusted_subnet.id
 }
+
