@@ -5,9 +5,8 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      # IMPORTANT: Use a version known to support the NGFW resource.
-      # Versions 3.117.0 and higher in the 3.x series should work.
-      version = "3.117.1" # <-- FORCED TO SPECIFIC VERSION
+      # IMPORTANT: This resource type requires AzureRM provider 4.x.x or newer.
+      version = "~> 4.30.0" # <-- CRITICAL: UPDATED TO 4.x.x
     }
   }
 }
@@ -136,8 +135,10 @@ resource "azurerm_public_ip" "ngfw_public_ip_egress" {
   tags                = var.tags
 }
 
-# --- Palo Alto Networks Cloud NGFW Resource ---
-resource "azurerm_palo_alto_next_generation_firewall_local_rulestack" "ngfw" {
+# --- Palo Alto Networks Cloud NGFW Resource (CORRECTED TYPE) ---
+# This resource provisions the Cloud NGFW service attached to a VNet
+# and managed via Azure Rulestack.
+resource "azurerm_palo_alto_next_generation_firewall_virtual_network_local_rulestack" "ngfw" { # <-- CRITICAL: CORRECTED RESOURCE TYPE
   name                = var.firewall_name
   location            = azurerm_resource_group.ngfw_rg.location
   resource_group_name = azurerm_resource_group.ngfw_rg.name
@@ -174,7 +175,7 @@ resource "azurerm_palo_alto_next_generation_firewall_local_rulestack" "ngfw" {
 # --- Outputs from THIS Module (AzureCloudNGFW) ---
 output "cloud_ngfw_name" {
   description = "The name of the deployed Cloud NGFW instance."
-  value       = azurerm_palo_alto_next_generation_firewall_local_rulestack.ngfw.name
+  value       = azurerm_palo_alto_next_generation_firewall_virtual_network_local_rulestack.ngfw.name # <-- UPDATED OUTPUT REFERENCE
 }
 
 output "cloud_ngfw_public_ip_ingress" {
@@ -201,4 +202,3 @@ output "ngfw_trusted_subnet_id" {
   description = "The ID of the trusted subnet connected to the NGFW."
   value       = azurerm_subnet.trusted_subnet.id
 }
-
