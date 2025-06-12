@@ -5,7 +5,9 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 3.117.0" # Make sure this is updated!
+      # IMPORTANT: Use a version known to support the NGFW resource.
+      # Versions 3.117.0 and higher in the 3.x series should work.
+      version = "~> 3.117.0" 
     }
   }
 }
