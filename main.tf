@@ -51,12 +51,7 @@ variable "untrusted_subnet_prefix" {
   type        = string
 }
 
-variable "trusted_subnet_name" {
-  description = "The name of the trusted subnet for the NGFW interface."
-  type        = string
-}
-
-variable "trusted_subnet_name" {
+variable "trusted_subnet_name" { # <-- CORRECTED: Duplicate variable removed
   description = "The name of the trusted subnet for the NGFW interface."
   type        = string
 }
@@ -146,7 +141,7 @@ resource "azurerm_palo_alto_local_rulestack" "ngfw_rulestack" {
   name                = "${var.firewall_name}-rulestack"
   location            = azurerm_resource_group.ngfw_rg.location
   resource_group_name = azurerm_resource_group.ngfw_rg.name
-  tags                = var.tags # <-- Tags are at the top level
+  tags                = var.tags
 
   # `security_services` and `min_engine_version` are NOT directly on this resource
   # in provider 4.x.x. They are configured via rulestack rules or are implicit.
