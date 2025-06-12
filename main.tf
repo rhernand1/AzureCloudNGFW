@@ -6,7 +6,7 @@ terraform {
     azurerm = {
       source  = "hashicorp/azurerm"
       # IMPORTANT: This resource type requires AzureRM provider 4.x.x or newer.
-      version = "~> 4.30.0" # <-- CRITICAL: UPDATED TO 4.x.x
+      version = "~> 4.30.0" # CRITICAL: UPDATED TO 4.x.x
     }
   }
 }
@@ -135,14 +135,38 @@ resource "azurerm_public_ip" "ngfw_public_ip_egress" {
   tags                = var.tags
 }
 
-# --- Palo Alto Networks Cloud NGFW Resource (CORRECTED TYPE) ---
-# This resource provisions the Cloud NGFW service attached to a VNet
-# and managed via Azure Rulestack.
-resource "azurerm_palo_alto_next_generation_firewall_virtual_network_local_rulestack" "ngfw" { # <-- CRITICAL: CORRECTED RESOURCE TYPE
-  name                = var.firewall_name
+# --- Palo Alto Networks Local Rulestack (NEW RESOURCE) ---
+# This defines the local rulestack that the NGFW will use for policy.
+resource "azurerm_palo_alto_local_rulestack" "ngfw_rulestack" {
+  name                = "${var.firewall_name}-rulestack"
   location            = azurerm_resource_group.ngfw_rg.location
   resource_group_name = azurerm_resource_group.ngfw_rg.name
+
+  # Mandatory properties for the rulestack
+  security_services {
+    anti_spyware_profile_name = "default"
+    anti_virus_profile_name   = "default"
+    url_filtering_profile_name = "default"
+    file_blocking_profile_name = "default"
+    dns_security_profile_name = "default"
+  }
+  
+  # Other properties like `min_engine_version` are defined directly on the rulestack resource
+  # not on the firewall resource in this provider version.
+  min_engine_version = "9.0.0" # Example, adjust as needed.
+
+  tags = var.tags
+}
+
+# --- Palo Alto Networks Cloud NGFW Resource (CORRECTED TYPE AND STRUCTURE) ---
+resource "azurerm_palo_alto_next_generation_firewall_virtual_network_local_rulestack" "ngfw" {
+  name                = var.firewall_name
+  # The 'location' argument is NOT directly on this resource in 4.x.x+
+  resource_group_name = azurerm_resource_group.ngfw_rg.name
   tags                = var.tags
+
+  # CRITICAL: Link to the separately created rulestack
+  rulestack_id = azurerm_palo_alto_local_rulestack.ngfw_rulestack.id # <-- NEW REQUIRED ARGUMENT
 
   network_profile {
     public_ip_address_ids = [
@@ -156,26 +180,13 @@ resource "azurerm_palo_alto_next_generation_firewall_virtual_network_local_rules
       untrusted_subnet_id = azurerm_subnet.untrusted_subnet.id
     }
   }
-
-  local_rulestack {
-    name       = "${var.firewall_name}-rulestack"
-    location   = azurerm_resource_group.ngfw_rg.location
-    min_engine_version = "9.0.0"
-
-    security_services {
-      anti_spyware_profile_name = "default"
-      anti_virus_profile_name   = "default"
-      url_filtering_profile_name = "default"
-      file_blocking_profile_name = "default"
-      dns_security_profile_name = "default"
-    }
-  }
+  # The 'local_rulestack' block is removed from here as it's a separate resource now.
 }
 
 # --- Outputs from THIS Module (AzureCloudNGFW) ---
 output "cloud_ngfw_name" {
   description = "The name of the deployed Cloud NGFW instance."
-  value       = azurerm_palo_alto_next_generation_firewall_virtual_network_local_rulestack.ngfw.name # <-- UPDATED OUTPUT REFERENCE
+  value       = azurerm_palo_alto_next_generation_firewall_virtual_network_local_rulestack.ngfw.name
 }
 
 output "cloud_ngfw_public_ip_ingress" {
