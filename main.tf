@@ -1,21 +1,22 @@
 # main.tf for github.com/rhernand1/AzureCloudNGFW (this is the actual NGFW module)
 
 # --- Provider Configuration ---
+# Removed the explicit 'provider "azurerm" {}' block here.
+# This module will now implicitly inherit the 'azurerm' provider configuration
+# from its parent module (my-ngfw-caller), which gets it from the root config.
+
 terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
       # IMPORTANT: This resource type requires AzureRM provider 4.x.x or newer.
-      version = "~> 4.30.0" # CRITICAL: UPDATED TO 4.x.x
+      version = "~> 4.30.0"
     }
   }
 }
 
-provider "azurerm" {
-  features {}
-}
-
 # --- Input Variables for THIS Module (AzureCloudNGFW) ---
+# Removed 'variable "subscription_id"' as it's now handled by inherited provider.
 variable "resource_group_name" {
   description = "The name of the Azure Resource Group for the Cloud NGFW."
   type        = string
@@ -51,7 +52,7 @@ variable "untrusted_subnet_prefix" {
   type        = string
 }
 
-variable "trusted_subnet_name" { # <-- CORRECTED: Duplicate variable removed
+variable "trusted_subnet_name" {
   description = "The name of the trusted subnet for the NGFW interface."
   type        = string
 }
@@ -135,25 +136,21 @@ resource "azurerm_public_ip" "ngfw_public_ip_egress" {
   tags                = var.tags
 }
 
-# --- Palo Alto Networks Local Rulestack (UPDATED STRUCTURE - tags removed) ---
-# This defines the local rulestack that the NGFW will use for policy.
+# --- Palo Alto Networks Local Rulestack ---
 resource "azurerm_palo_alto_local_rulestack" "ngfw_rulestack" {
   name                = "${var.firewall_name}-rulestack"
   location            = azurerm_resource_group.ngfw_rg.location
   resource_group_name = azurerm_resource_group.ngfw_rg.name
-  # tags                = var.tags # <-- REMOVED: 'tags' argument not supported on this resource in 4.x.x
-
-  # `security_services` and `min_engine_version` are NOT directly on this resource
-  # in provider 4.x.x. They are configured via rulestack rules or are implicit.
+  tags                = var.tags
 }
 
-# --- Palo Alto Networks Cloud NGFW Resource (CORRECTED TYPE AND STRUCTURE) ---
+# --- Palo Alto Networks Cloud NGFW Resource ---
 resource "azurerm_palo_alto_next_generation_firewall_virtual_network_local_rulestack" "ngfw" {
   name                = var.firewall_name
   resource_group_name = azurerm_resource_group.ngfw_rg.name
   tags                = var.tags
 
-  rulestack_id = azurerm_palo_alto_local_rulestack.ngfw_rulestack.id # <-- Link to the separately created rulestack
+  rulestack_id = azurerm_palo_alto_local_rulestack.ngfw_rulestack.id
 
   network_profile {
     public_ip_address_ids = [
