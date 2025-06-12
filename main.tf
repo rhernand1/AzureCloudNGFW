@@ -137,12 +137,16 @@ resource "azurerm_public_ip" "ngfw_public_ip_egress" {
   tags                = var.tags
 }
 
-# --- Palo Alto Networks Local Rulestack ---
+# --- Palo Alto Networks Local Rulestack (UPDATED STRUCTURE - tags removed) ---
+# This defines the local rulestack that the NGFW will use for policy.
 resource "azurerm_palo_alto_local_rulestack" "ngfw_rulestack" {
   name                = "${var.firewall_name}-rulestack"
   location            = azurerm_resource_group.ngfw_rg.location
   resource_group_name = azurerm_resource_group.ngfw_rg.name
-  tags                = var.tags
+  # tags                = var.tags # <-- REMOVED: 'tags' argument not supported on this resource in 4.x.x
+
+  # `security_services` and `min_engine_version` are NOT directly on this resource
+  # in provider 4.x.x. They are configured via rulestack rules or are implicit.
 }
 
 # --- Palo Alto Networks Cloud NGFW Resource ---
