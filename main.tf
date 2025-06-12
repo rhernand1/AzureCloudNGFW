@@ -5,7 +5,7 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 3.117.0" # <-- UPDATED: Specific version for compatibility
+      version = "~> 3.117.0" # Make sure this is updated!
     }
   }
 }
@@ -15,8 +15,6 @@ provider "azurerm" {
 }
 
 # --- Input Variables for THIS Module (AzureCloudNGFW) ---
-# These variables define the inputs that this module expects to receive
-# from the 'my-ngfw-caller' module.
 variable "resource_group_name" {
   description = "The name of the Azure Resource Group for the Cloud NGFW."
   type        = string
@@ -201,4 +199,3 @@ output "ngfw_trusted_subnet_id" {
   description = "The ID of the trusted subnet connected to the NGFW."
   value       = azurerm_subnet.trusted_subnet.id
 }
-
