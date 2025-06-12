@@ -5,7 +5,7 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 3.0" # <-- UPDATED: Broadened version to allow latest 3.x
+      version = "~> 3.117.0" # <-- UPDATED: Specific version for compatibility
     }
   }
 }
@@ -17,7 +17,6 @@ provider "azurerm" {
 # --- Input Variables for THIS Module (AzureCloudNGFW) ---
 # These variables define the inputs that this module expects to receive
 # from the 'my-ngfw-caller' module.
-
 variable "resource_group_name" {
   description = "The name of the Azure Resource Group for the Cloud NGFW."
   type        = string
@@ -137,16 +136,13 @@ resource "azurerm_public_ip" "ngfw_public_ip_egress" {
   tags                = var.tags
 }
 
-# --- Palo Alto Networks Cloud NGFW Resource (CORRECTED TYPE) ---
-# This resource provisions the Cloud NGFW service attached to a VNet
-# and managed via Azure Rulestack.
+# --- Palo Alto Networks Cloud NGFW Resource ---
 resource "azurerm_palo_alto_next_generation_firewall_local_rulestack" "ngfw" {
   name                = var.firewall_name
   location            = azurerm_resource_group.ngfw_rg.location
   resource_group_name = azurerm_resource_group.ngfw_rg.name
   tags                = var.tags
 
-  # Network profile configuration for the NGFW interfaces.
   network_profile {
     public_ip_address_ids = [
       azurerm_public_ip.ngfw_public_ip_ingress.id,
@@ -160,11 +156,10 @@ resource "azurerm_palo_alto_next_generation_firewall_local_rulestack" "ngfw" {
     }
   }
 
-  # Local Rulestack Configuration (Mandatory for CloudManaged NGFW via Azure Rulestack)
   local_rulestack {
     name       = "${var.firewall_name}-rulestack"
     location   = azurerm_resource_group.ngfw_rg.location
-    min_engine_version = "9.0.0" # Example, update based on current requirements
+    min_engine_version = "9.0.0"
 
     security_services {
       anti_spyware_profile_name = "default"
